@@ -134,17 +134,20 @@ def _dig(obj: dict, *path, default=None):
 
 
 def fetch_status() -> dict:
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=3) as pool:
         doors_f = pool.submit(_api_get, f"/connected-vehicle/v2/vehicles/{VIN}/doors")
         energy_f = pool.submit(_api_get, f"/energy/v2/vehicles/{VIN}/state")
-        doors, energy = doors_f.result(), energy_f.result()
+        odo_f = pool.submit(_api_get, f"/connected-vehicle/v2/vehicles/{VIN}/odometer")
+        doors, energy, odo = doors_f.result(), energy_f.result(), odo_f.result()
 
     locked_raw = _dig(doors, "data", "centralLock", "value")
     charging_status = _dig(energy, "chargingStatus", "value")
+    odometer_raw = _dig(odo, "data", "odometer", "value")
     return {
         "battery_pct": _dig(energy, "batteryChargeLevel", "value"),
         "charging_status": charging_status,
         "range_km": _dig(energy, "electricRange", "value"),
+        "odometer_km": float(odometer_raw) / 1000 if odometer_raw is not None else None,
         "locked": locked_raw,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
