@@ -215,8 +215,8 @@ def _authorize_flow() -> None:
             self.end_headers()
             self.wfile.write(b"You can close this tab.")
 
-        def log_message(self, *_):
-            return
+        def log_message(self, format: str, *args) -> None:  # noqa: A002
+            del format, args
 
     parsed = urllib.parse.urlparse(REDIRECT_URI)
     if not parsed.hostname:
