@@ -1,7 +1,7 @@
 """Volvo Connected Vehicle + Energy API client.
 
-Exposes GET /status returning aggregated JSON:
-    { "battery_pct", "charging", "locked", "range_km", "vin", "fetched_at" }
+Exposes GET /status returning aggregated JSON with battery %, charging
+state, lock state, remaining electric range, and fetch timestamp.
 
 Auth model (Volvo does NOT accept username/password):
   1. Register an app at https://developer.volvocars.com -> get VCC_API_KEY,
@@ -22,6 +22,7 @@ import sys
 import time
 import urllib.parse
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -119,8 +120,6 @@ def _api_get(path: str, accept: str = "application/json") -> dict:
         },
         timeout=15,
     )
-    if not resp.ok:
-        resp.reason = f"{resp.reason} [{path}]"
     resp.raise_for_status()
     return resp.json()
 
@@ -135,18 +134,18 @@ def _dig(obj: dict, *path, default=None):
 
 
 def fetch_status() -> dict:
-    doors = _api_get(f"/connected-vehicle/v2/vehicles/{VIN}/doors")
-    energy = _api_get(f"/energy/v2/vehicles/{VIN}/state")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        doors_f = pool.submit(_api_get, f"/connected-vehicle/v2/vehicles/{VIN}/doors")
+        energy_f = pool.submit(_api_get, f"/energy/v2/vehicles/{VIN}/state")
+        doors, energy = doors_f.result(), energy_f.result()
 
     locked_raw = _dig(doors, "data", "centralLock", "value")
     charging_status = _dig(energy, "chargingStatus", "value")
     return {
-        "vin": VIN,
         "battery_pct": _dig(energy, "batteryChargeLevel", "value"),
-        "charging": charging_status == "CHARGING",
         "charging_status": charging_status,
         "range_km": _dig(energy, "electricRange", "value"),
-        "locked": locked_raw == "LOCKED" if locked_raw is not None else None,
+        "locked": locked_raw,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -216,10 +215,12 @@ def _authorize_flow() -> None:
             self.end_headers()
             self.wfile.write(b"You can close this tab.")
 
-        def log_message(self, *_):  # silence
+        def log_message(self, *_):
             return
 
     parsed = urllib.parse.urlparse(REDIRECT_URI)
+    if not parsed.hostname:
+        raise RuntimeError(f"VOLVO_REDIRECT_URI missing host: {REDIRECT_URI!r}")
     httpd = HTTPServer((parsed.hostname, parsed.port or 80), Handler)
     httpd.handle_request()
 
@@ -246,21 +247,28 @@ def _authorize_flow() -> None:
     print(f"Refresh token saved to {TOKEN_FILE}")
 
 
+def _print_scopes() -> None:
+    tok = _get_access_token()
+    payload_b64 = tok.split(".")[1]
+    payload_b64 += "=" * (-len(payload_b64) % 4)
+    claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+    print(json.dumps(
+        {"scope": claims.get("scope"), "aud": claims.get("aud"), "sub": claims.get("sub")},
+        indent=2,
+    ))
+
+
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "authorize":
-        _authorize_flow()
-    elif len(sys.argv) > 1 and sys.argv[1] == "token":
-        print(_get_access_token())
-    elif len(sys.argv) > 1 and sys.argv[1] == "vehicles":
-        print(json.dumps(_api_get("/connected-vehicle/v2/vehicles"), indent=2))
-    elif len(sys.argv) > 1 and sys.argv[1] == "raw":
-        path = sys.argv[2]
-        print(json.dumps(_api_get(path), indent=2))
-    elif len(sys.argv) > 1 and sys.argv[1] == "scopes":
-        tok = _get_access_token()
-        payload_b64 = tok.split(".")[1]
-        payload_b64 += "=" * (-len(payload_b64) % 4)
-        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
-        print(json.dumps({"scope": claims.get("scope"), "aud": claims.get("aud"), "sub": claims.get("sub")}, indent=2))
-    else:
-        app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
+    match sys.argv[1:]:
+        case ["authorize"]:
+            _authorize_flow()
+        case ["token"]:
+            print(_get_access_token())
+        case ["vehicles"]:
+            print(json.dumps(_api_get("/connected-vehicle/v2/vehicles"), indent=2))
+        case ["raw", path]:
+            print(json.dumps(_api_get(path), indent=2))
+        case ["scopes"]:
+            _print_scopes()
+        case _:
+            app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
