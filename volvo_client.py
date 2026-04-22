@@ -147,7 +147,7 @@ def fetch_status() -> dict:
         "battery_pct": _dig(energy, "batteryChargeLevel", "value"),
         "charging_status": charging_status,
         "range_km": _dig(energy, "electricRange", "value"),
-        "odometer_km": float(odometer_raw) / 1000 if odometer_raw is not None else None,
+        "odometer_km": float(odometer_raw) if odometer_raw is not None else None,
         "locked": locked_raw,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
