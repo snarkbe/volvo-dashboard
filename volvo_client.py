@@ -55,7 +55,7 @@ SCOPES = [
     "conve:odometer_status",
     "conve:battery_charge_level",
     "conve:fuel_status",
-    "conve:tyres_status",
+    "conve:tyre_status",
     "energy:state:read",
 ]
 
@@ -243,6 +243,13 @@ def _authorize_flow() -> None:
 
     if captured.get("state", [None])[0] != state:
         raise RuntimeError("OAuth state mismatch")
+
+    if "error" in captured:
+        raise RuntimeError(f"OAuth error: {captured['error'][0]}")
+
+    if "code" not in captured:
+        raise RuntimeError(f"No authorization code received. Callback parameters: {captured}")
+
     code = captured["code"][0]
 
     resp = requests.post(
