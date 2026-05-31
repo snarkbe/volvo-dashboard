@@ -5,6 +5,16 @@ and exposes `GET /status` with battery, charging, lock, and range. Designed
 to feed a [Homepage](https://gethomepage.dev) `customapi` widget running on
 a NAS.
 
+## Authentication in brief
+
+Volvo has no username/password API. You authorize **once** in a browser and
+the service stores an OAuth2 **refresh token** in `data/token.json`, which it
+exchanges for short-lived access tokens at runtime. The refresh token
+**rotates on every use**, so the `data/` volume must persist and only one
+instance may use it at a time. Full mechanism, rotation, and recovery are in
+[Authentication & `token.json` — the gory details](#authentication--tokenjson--the-gory-details)
+at the end.
+
 ## First-time setup (local)
 
 1. Register an application at the [Volvo Developer Portal](https://developer.volvocars.com/)
@@ -64,7 +74,7 @@ Copy `data/token.json` and `.env` to the host volume first, then:
 docker pull snarkbe/volvo-dashboard:latest
 docker rm -f volvo-dashboard
 docker run -d --name volvo-dashboard \
-  -p 8080:8080 \
+  -p 11080:8080 \
   -v /volume1/docker/volvo-dashboard/data:/app/data \
   --env-file /volume1/docker/volvo-dashboard/.env \
   snarkbe/volvo-dashboard:latest
@@ -78,7 +88,7 @@ Configured via the Docker tab in the Unraid WebUI — **Add Container**:
 
 - **Repository**: `snarkbe/volvo-dashboard:latest`
 - **Network Type**: Bridge (or your preference)
-- **Port**: host `8080` → container `8080`
+- **Port**: host `11080` → container `8080`
 - **Path**: host `/mnt/user/appdata/volvo-dashboard/data` → container `/app/data`
   (preserves the rotating refresh token across container updates)
 - **Variables** (one per env var from `.env.example`): `VOLVO_VIN`,
@@ -92,35 +102,43 @@ container to pull `:latest` and recreate.
 
 ## Homepage widget snippet
 
+![Volvo EC40 status rendered as a Homepage customapi widget](docs/dashboard-widget.png)
+
 ```yaml
 - Volvo EC40:
     icon: mdi-car-electric
+    #icon: si-volvo
     server: my-docker
     container: VolvoAPI
-    widgets:
-      - type: customapi
-        url: http://192.168.0.8:11080/status
-        refreshInterval: 30000
-        display: list
-        mappings:
-          - field: battery_pct
-            label: Battery Left
-            format: percent
-          - field: charging_status
-            label: Charging Status
-            format: text
-          - field: range_km
-            label: Range left
-            suffix: "km"
-          - field: locked
-            label: Lock Status
-            format: text
-          - field: fetched_at
-            label: Fetched at
-            format: date
-            locale: en-GB
-            dateStyle: medium
-            timeStyle: medium
+    siteMonitor: http://192.168.0.8:11080/healthz
+    widget:
+      type: customapi
+      url: http://192.168.0.8:11080/status
+      refreshInterval: 30000
+      display: list
+      mappings:
+        - field: battery_pct
+          label: Battery Left
+          format: percent
+        - field: charging_status
+          label: Charging Status
+          format: text
+        - field: range_km
+          label: Range left
+          suffix: "km"
+        - field: odometer_km
+          label: Odometer
+          suffix: "km"
+          format: number
+        - field: locked
+          label: Lock Status
+          format: text
+        - field: fetched_at
+          label: Fetched at
+          format: date
+          locale: en-GB
+          dateStyle: medium
+          timeStyle: medium
 ```
 
 ## Diagnostic CLI
@@ -132,10 +150,85 @@ python volvo_client.py scopes     # show scope/aud/sub from the access token
 python volvo_client.py raw /connected-vehicle/v2/vehicles/$env:VOLVO_VIN/doors
 ```
 
-## Notes
+## Authentication & `token.json` — the gory details
 
-- Refresh token rotates on every `/token` call; `data/token.json` is
-  rewritten each time. Don't run two instances against the same token file.
-- If the service is idle for weeks, Volvo may expire the refresh token —
-  re-run `authorize`.
-- Revoke access any time at volvo.com → Connected Services.
+Volvo's APIs don't accept a username/password. Everything hangs off an
+OAuth2 **refresh token** that you obtain once, interactively, and then store
+on disk in `token.json`. Understanding this file is the key to keeping the
+service alive long-term.
+
+### The credentials, and what each is for
+
+| Credential | Where it lives | Role |
+|---|---|---|
+| `VCC_API_KEY` | `.env` | Per-app API key sent as the `vcc-api-key` header on every Volvo API call. Identifies your *application*. |
+| `VOLVO_CLIENT_ID` / `VOLVO_CLIENT_SECRET` | `.env` | OAuth2 client credentials. Used as HTTP Basic auth when exchanging codes/refresh tokens at the token endpoint. |
+| `refresh_token` | `data/token.json` | The long-lived grant that proves *a user authorized this app*. Exchanged for short-lived access tokens on demand. |
+| `access_token` | in-memory only | Short-lived (~30 min) bearer token actually sent to the API. Never written to disk; cached in the process and refreshed automatically. |
+
+### The token lifecycle
+
+```
+authorize (once, browser)          runtime (every ~30 min, headless)
+─────────────────────────          ─────────────────────────────────
+ you log in at volvo.com                 read refresh_token
+        │                                from data/token.json
+        ▼                                        │
+ authorization code                              ▼
+        │  + PKCE verifier              POST /token (grant_type=
+        ▼     + client secret                 refresh_token)
+ POST /token (grant_type=                       │
+   authorization_code)                          ▼
+        │                              new access_token  (kept in memory)
+        ▼                              new refresh_token (rotated!)
+ first refresh_token  ───────────►            │
+ written to token.json                        ▼
+                                     data/token.json REWRITTEN
+```
+
+What `token.json` looks like — a single JSON object, nothing more:
+
+```json
+{ "refresh_token": "eyJ...rotates-on-every-use..." }
+```
+
+### Rotation — why the file is precious
+
+Volvo issues a **new refresh token on every `/token` exchange** and
+invalidates the old one. The service writes the fresh value back to
+`data/token.json` after each access-token refresh (see
+`_save_refresh_token` in `volvo_client.py`). Practical consequences:
+
+- **The file is stateful, not a static secret.** Restoring an old backup of
+  `token.json` hands Volvo a token it has already retired → every call then
+  fails with `400 invalid_grant`, and you must re-run `authorize`.
+- **Run exactly one instance per token file.** Two processes (or a stale
+  container that wasn't fully removed) racing on the same `data/` mount will
+  each rotate the token out from under the other, breaking both.
+- **The `data/` volume must be persistent.** It's what carries the rotating
+  token across container recreates and image updates. Lose the volume → lose
+  the token → re-authorize.
+- **Expiry from disuse.** If no refresh happens for a long stretch (weeks),
+  Volvo can expire the refresh token entirely. The fix is always the same:
+  re-run `authorize` to mint a fresh one. Because the running service
+  refreshes every ~30 min, an actively-polled deployment effectively keeps
+  itself alive.
+
+### Re-authorizing (rotating manually / recovering)
+
+Whenever the token is lost, expired, or you want to start clean:
+
+```powershell
+$env:VOLVO_TOKEN_FILE = "./data/token.json"
+python volvo_client.py authorize   # opens a browser, you log in once
+```
+
+This overwrites `data/token.json` with a brand-new refresh token. Copy that
+file back to the host volume (see the deploy sections) and restart the
+container. To revoke the grant entirely, go to volvo.com → Connected
+Services; the next refresh attempt will then fail until you re-authorize.
+
+> **Security note:** `token.json` and `.env` are git-ignored on purpose —
+> never commit them. The refresh token is a bearer credential for your car's
+> data; treat the `data/` directory like a password file (restrict
+> permissions, don't sync it to anything public).
