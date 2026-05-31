@@ -55,6 +55,7 @@ SCOPES = [
     "conve:odometer_status",
     "conve:battery_charge_level",
     "conve:fuel_status",
+    "conve:tyres_status",
     "energy:state:read",
 ]
 
@@ -134,21 +135,34 @@ def _dig(obj: dict, *path, default=None):
 
 
 def fetch_status() -> dict:
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         doors_f = pool.submit(_api_get, f"/connected-vehicle/v2/vehicles/{VIN}/doors")
         energy_f = pool.submit(_api_get, f"/energy/v2/vehicles/{VIN}/state")
         odo_f = pool.submit(_api_get, f"/connected-vehicle/v2/vehicles/{VIN}/odometer")
-        doors, energy, odo = doors_f.result(), energy_f.result(), odo_f.result()
+        tyres_f = pool.submit(_api_get, f"/connected-vehicle/v2/vehicles/{VIN}/tyres")
+        doors, energy, odo, tyres = doors_f.result(), energy_f.result(), odo_f.result(), tyres_f.result()
 
     locked_raw = _dig(doors, "data", "centralLock", "value")
     charging_status = _dig(energy, "chargingStatus", "value")
     odometer_raw = _dig(odo, "data", "odometer", "value")
+
+    tyre_pressures = None
+    if tyres and "data" in tyres:
+        tyre_data = tyres.get("data", {})
+        tyre_pressures = {
+            "front_left": _dig(tyre_data, "frontLeftTyre", "pressure", "value"),
+            "front_right": _dig(tyre_data, "frontRightTyre", "pressure", "value"),
+            "rear_left": _dig(tyre_data, "rearLeftTyre", "pressure", "value"),
+            "rear_right": _dig(tyre_data, "rearRightTyre", "pressure", "value"),
+        }
+
     return {
         "battery_pct": _dig(energy, "batteryChargeLevel", "value"),
         "charging_status": charging_status,
         "range_km": _dig(energy, "electricRange", "value"),
         "odometer_km": float(odometer_raw) if odometer_raw is not None else None,
         "locked": locked_raw,
+        "tyre_pressures": tyre_pressures,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
 
