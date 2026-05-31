@@ -5,8 +5,6 @@ and exposes `GET /status` with battery, charging, lock, and range. Designed
 to feed a [Homepage](https://gethomepage.dev) `customapi` widget running on
 a NAS.
 
-![Volvo EC40 status rendered as a Homepage customapi widget](docs/dashboard-widget.png)
-
 ## How authentication works (`token.json`)
 
 Volvo's APIs don't accept a username/password. Everything hangs off an
@@ -176,6 +174,8 @@ headless). After a new image is pushed, hit **Force Update** on the
 container to pull `:latest` and recreate.
 
 ## Homepage widget snippet
+
+![Volvo EC40 status rendered as a Homepage customapi widget](docs/dashboard-widget.png)
 
 ```yaml
 - Volvo EC40:
