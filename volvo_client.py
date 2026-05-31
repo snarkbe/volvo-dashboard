@@ -150,10 +150,10 @@ def fetch_status() -> dict:
     if tyres and "data" in tyres:
         tyre_data = tyres.get("data", {})
         tyre_pressures = {
-            "front_left": _dig(tyre_data, "frontLeftTyre", "pressure", "value"),
-            "front_right": _dig(tyre_data, "frontRightTyre", "pressure", "value"),
-            "rear_left": _dig(tyre_data, "rearLeftTyre", "pressure", "value"),
-            "rear_right": _dig(tyre_data, "rearRightTyre", "pressure", "value"),
+            "front_left": _dig(tyre_data, "frontLeft", "value"),
+            "front_right": _dig(tyre_data, "frontRight", "value"),
+            "rear_left": _dig(tyre_data, "rearLeft", "value"),
+            "rear_right": _dig(tyre_data, "rearRight", "value"),
         }
 
     return {
