@@ -5,6 +5,91 @@ and exposes `GET /status` with battery, charging, lock, and range. Designed
 to feed a [Homepage](https://gethomepage.dev) `customapi` widget running on
 a NAS.
 
+![Volvo EC40 status rendered as a Homepage customapi widget](docs/dashboard-widget.png)
+
+## How authentication works (`token.json`)
+
+Volvo's APIs don't accept a username/password. Everything hangs off an
+OAuth2 **refresh token** that you obtain once, interactively, and then store
+on disk in `token.json`. Understanding this file is the key to keeping the
+service alive long-term.
+
+### The credentials, and what each is for
+
+| Credential | Where it lives | Role |
+|---|---|---|
+| `VCC_API_KEY` | `.env` | Per-app API key sent as the `vcc-api-key` header on every Volvo API call. Identifies your *application*. |
+| `VOLVO_CLIENT_ID` / `VOLVO_CLIENT_SECRET` | `.env` | OAuth2 client credentials. Used as HTTP Basic auth when exchanging codes/refresh tokens at the token endpoint. |
+| `refresh_token` | `data/token.json` | The long-lived grant that proves *a user authorized this app*. Exchanged for short-lived access tokens on demand. |
+| `access_token` | in-memory only | Short-lived (~30 min) bearer token actually sent to the API. Never written to disk; cached in the process and refreshed automatically. |
+
+### The token lifecycle
+
+```
+authorize (once, browser)          runtime (every ~30 min, headless)
+─────────────────────────          ─────────────────────────────────
+ you log in at volvo.com                 read refresh_token
+        │                                from data/token.json
+        ▼                                        │
+ authorization code                              ▼
+        │  + PKCE verifier              POST /token (grant_type=
+        ▼     + client secret                 refresh_token)
+ POST /token (grant_type=                       │
+   authorization_code)                          ▼
+        │                              new access_token  (kept in memory)
+        ▼                              new refresh_token (rotated!)
+ first refresh_token  ───────────►            │
+ written to token.json                        ▼
+                                     data/token.json REWRITTEN
+```
+
+What `token.json` looks like — a single JSON object, nothing more:
+
+```json
+{ "refresh_token": "eyJ...rotates-on-every-use..." }
+```
+
+### Rotation — why the file is precious
+
+Volvo issues a **new refresh token on every `/token` exchange** and
+invalidates the old one. The service writes the fresh value back to
+`data/token.json` after each access-token refresh (see
+`_save_refresh_token` in `volvo_client.py`). Practical consequences:
+
+- **The file is stateful, not a static secret.** Restoring an old backup of
+  `token.json` hands Volvo a token it has already retired → every call then
+  fails with `400 invalid_grant`, and you must re-run `authorize`.
+- **Run exactly one instance per token file.** Two processes (or a stale
+  container that wasn't fully removed) racing on the same `data/` mount will
+  each rotate the token out from under the other, breaking both.
+- **The `data/` volume must be persistent.** It's what carries the rotating
+  token across container recreates and image updates. Lose the volume → lose
+  the token → re-authorize.
+- **Expiry from disuse.** If no refresh happens for a long stretch (weeks),
+  Volvo can expire the refresh token entirely. The fix is always the same:
+  re-run `authorize` to mint a fresh one. Because the running service
+  refreshes every ~30 min, an actively-polled deployment effectively keeps
+  itself alive.
+
+### Re-authorizing (rotating manually / recovering)
+
+Whenever the token is lost, expired, or you want to start clean:
+
+```powershell
+$env:VOLVO_TOKEN_FILE = "./data/token.json"
+python volvo_client.py authorize   # opens a browser, you log in once
+```
+
+This overwrites `data/token.json` with a brand-new refresh token. Copy that
+file back to the host volume (see the deploy sections) and restart the
+container. To revoke the grant entirely, go to volvo.com → Connected
+Services; the next refresh attempt will then fail until you re-authorize.
+
+> **Security note:** `token.json` and `.env` are git-ignored on purpose —
+> never commit them. The refresh token is a bearer credential for your car's
+> data; treat the `data/` directory like a password file (restrict
+> permissions, don't sync it to anything public).
+
 ## First-time setup (local)
 
 1. Register an application at the [Volvo Developer Portal](https://developer.volvocars.com/)
@@ -134,8 +219,8 @@ python volvo_client.py raw /connected-vehicle/v2/vehicles/$env:VOLVO_VIN/doors
 
 ## Notes
 
-- Refresh token rotates on every `/token` call; `data/token.json` is
-  rewritten each time. Don't run two instances against the same token file.
-- If the service is idle for weeks, Volvo may expire the refresh token —
-  re-run `authorize`.
+- Token rotation, persistence, and recovery are covered in detail under
+  [How authentication works (`token.json`)](#how-authentication-works-tokenjson).
+  The short version: rotates on every call, keep the `data/` volume, run one
+  instance per token file, re-run `authorize` if it expires.
 - Revoke access any time at volvo.com → Connected Services.
