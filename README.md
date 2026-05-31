@@ -88,7 +88,7 @@ Configured via the Docker tab in the Unraid WebUI — **Add Container**:
 
 - **Repository**: `snarkbe/volvo-dashboard:latest`
 - **Network Type**: Bridge (or your preference)
-- **Port**: host `8080` → container `8080`
+- **Port**: host `11080` → container `8080`
 - **Path**: host `/mnt/user/appdata/volvo-dashboard/data` → container `/app/data`
   (preserves the rotating refresh token across container updates)
 - **Variables** (one per env var from `.env.example`): `VOLVO_VIN`,
@@ -107,32 +107,38 @@ container to pull `:latest` and recreate.
 ```yaml
 - Volvo EC40:
     icon: mdi-car-electric
+    #icon: si-volvo
     server: my-docker
     container: VolvoAPI
-    widgets:
-      - type: customapi
-        url: http://192.168.0.8:11080/status
-        refreshInterval: 30000
-        display: list
-        mappings:
-          - field: battery_pct
-            label: Battery Left
-            format: percent
-          - field: charging_status
-            label: Charging Status
-            format: text
-          - field: range_km
-            label: Range left
-            suffix: "km"
-          - field: locked
-            label: Lock Status
-            format: text
-          - field: fetched_at
-            label: Fetched at
-            format: date
-            locale: en-GB
-            dateStyle: medium
-            timeStyle: medium
+    siteMonitor: http://192.168.0.8:11080/healthz
+    widget:
+      type: customapi
+      url: http://192.168.0.8:11080/status
+      refreshInterval: 30000
+      display: list
+      mappings:
+        - field: battery_pct
+          label: Battery Left
+          format: percent
+        - field: charging_status
+          label: Charging Status
+          format: text
+        - field: range_km
+          label: Range left
+          suffix: "km"
+        - field: odometer_km
+          label: Odometer
+          suffix: "km"
+          format: number
+        - field: locked
+          label: Lock Status
+          format: text
+        - field: fetched_at
+          label: Fetched at
+          format: date
+          locale: en-GB
+          dateStyle: medium
+          timeStyle: medium
 ```
 
 ## Diagnostic CLI
