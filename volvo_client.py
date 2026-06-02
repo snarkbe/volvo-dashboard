@@ -26,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
+from typing import Any
 
 import requests
 from flask import Flask, jsonify
@@ -125,7 +126,7 @@ def _api_get(path: str, accept: str = "application/json") -> dict:
     return resp.json()
 
 
-def _dig(obj: dict, *path, default=None):
+def _dig(obj: dict, *path: Any, default: Any = None) -> Any:
     cur = obj
     for key in path:
         if not isinstance(cur, dict) or key not in cur:
@@ -160,6 +161,13 @@ def fetch_status() -> dict:
         "battery_pct": _dig(energy, "batteryChargeLevel", "value"),
         "charging_status": charging_status,
         "range_km": _dig(energy, "electricRange", "value"),
+        "charger_connection_status": _dig(energy, "chargerConnectionStatus", "value"),
+        "charging_type": _dig(energy, "chargingType", "value"),
+        "charger_power_status": _dig(energy, "chargerPowerStatus", "value"),
+        "estimated_charging_time_minutes": _dig(energy, "estimatedChargingTimeToTargetBatteryChargeLevel", "value"),
+        "target_battery_pct": _dig(energy, "targetBatteryChargeLevel", "value"),
+        "charging_current_limit_amp": _dig(energy, "chargingCurrentLimit", "value"),
+        "charging_power_watts": _dig(energy, "chargingPower", "value"),
         "odometer_km": float(odometer_raw) if odometer_raw is not None else None,
         "locked": locked_raw,
         "tyre_pressures": tyre_pressures,
