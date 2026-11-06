@@ -1,9 +1,12 @@
-FROM python:3.12-slim
+FROM python:3.14-slim-trixie
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Drop pip afterwards: it isn't needed at runtime and its vendored copies of
+# urllib3/msgpack/setuptools are what CVE scanners flag.
+RUN pip install --no-cache-dir -r requirements.txt \
+ && pip uninstall -y pip
 
 COPY volvo_client.py VERSION ./
 
