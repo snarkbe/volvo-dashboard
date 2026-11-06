@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import secrets
 import sys
@@ -36,6 +37,13 @@ try:
     load_dotenv()
 except ImportError:
     pass
+
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    stream=sys.stdout,
+)
+log = logging.getLogger("volvo")
 
 VIN = os.environ["VOLVO_VIN"]
 CLIENT_ID = os.environ["VOLVO_CLIENT_ID"]
@@ -103,6 +111,7 @@ def _get_access_token() -> str:
         if _cached_access_token and _cached_access_token["expires_at"] - 60 > now:
             return _cached_access_token["access_token"]
 
+        log.debug("Refreshing access token at %s", TOKEN_URL)
         resp = requests.post(
             TOKEN_URL,
             headers={
@@ -115,18 +124,37 @@ def _get_access_token() -> str:
             },
             timeout=15,
         )
+        if not resp.ok:
+            log.error(
+                "Token refresh failed: HTTP %s %s", resp.status_code, resp.text[:500]
+            )
+            if "invalid_grant" in resp.text:
+                log.error(
+                    "Refresh token rejected (expired, already used, or issued for "
+                    "another client). Re-run `python volvo_client.py authorize`."
+                )
         resp.raise_for_status()
         body = resp.json()
-        if "refresh_token" in body:
+        rotated = "refresh_token" in body
+        if rotated:
             _save_refresh_token(body["refresh_token"])
+        expires_in = int(body.get("expires_in", 1800))
+        log.info(
+            "Access token refreshed (expires in %ss, refresh token %s, "
+            "refresh valid %ss)",
+            expires_in,
+            "rotated + saved" if rotated else "unchanged",
+            body.get("refresh_expires_in", "?"),
+        )
         _cached_access_token = {
             "access_token": body["access_token"],
-            "expires_at": now + int(body.get("expires_in", 1800)),
+            "expires_at": now + expires_in,
         }
         return _cached_access_token["access_token"]
 
 
 def _api_get(path: str, accept: str = "application/json") -> dict:
+    started = time.monotonic()
     resp = requests.get(
         f"{API_BASE}{path}",
         headers={
@@ -136,6 +164,14 @@ def _api_get(path: str, accept: str = "application/json") -> dict:
         },
         timeout=15,
     )
+    elapsed_ms = (time.monotonic() - started) * 1000
+    if resp.ok:
+        log.debug("GET %s -> %s (%.0f ms)", path, resp.status_code, elapsed_ms)
+    else:
+        log.warning(
+            "GET %s -> %s (%.0f ms): %s",
+            path, resp.status_code, elapsed_ms, resp.text[:500],
+        )
     resp.raise_for_status()
     return resp.json()
 
@@ -189,14 +225,49 @@ def fetch_status() -> dict:
     }
 
 
+def _log_startup() -> None:
+    version_file = Path(__file__).with_name("VERSION")
+    version = version_file.read_text().strip() if version_file.exists() else "dev"
+    log.info("volvo-dashboard %s starting (pid %s)", version, os.getpid())
+    log.info("VIN: %s…%s", VIN[:3], VIN[-4:])
+    log.info(
+        "Auth: %s client %s… -> %s",
+        "Volvo ID (Keycloak)" if _KEYCLOAK else "legacy Volvo ID (retired after 2027-01-31)",
+        CLIENT_ID[:8], TOKEN_URL,
+    )
+    log.info("Scopes: %s", " ".join(SCOPES))
+    if TOKEN_FILE.exists():
+        mtime = datetime.fromtimestamp(TOKEN_FILE.stat().st_mtime, timezone.utc)
+        log.info("Token file: %s (last written %s)", TOKEN_FILE, mtime.isoformat(timespec="seconds"))
+    else:
+        log.warning(
+            "Token file %s not found - run `python volvo_client.py authorize` "
+            "and copy it here", TOKEN_FILE,
+        )
+    if not _KEYCLOAK:
+        log.warning("Legacy dc- client id in use; migrate to a vid- app before 2027-01-31")
+
+
 app = Flask(__name__)
+if __name__ != "__main__" or len(sys.argv) == 1:
+    _log_startup()
 
 
 @app.get("/status")
 def status():
     try:
-        return jsonify(fetch_status())
+        started = time.monotonic()
+        data = fetch_status()
+        log.info(
+            "/status ok in %.0f ms: battery=%s%% range=%skm charging=%s locked=%s",
+            (time.monotonic() - started) * 1000,
+            data["battery_pct"], data["range_km"],
+            data["charging_status"], data["locked"],
+        )
+        return jsonify(data)
     except requests.HTTPError as e:
+        log.error("/status failed: Volvo API HTTP %s for %s",
+                  e.response.status_code, e.response.url)
         return (
             jsonify({
                 "error": "volvo_api",
@@ -209,7 +280,7 @@ def status():
     except KeyError as e:
         return jsonify({"error": "missing_env", "var": str(e)}), 500
     except Exception as e:
-        app.logger.exception("status failed")
+        log.exception("/status failed")
         return jsonify({"error": type(e).__name__, "detail": str(e)}), 500
 
 
