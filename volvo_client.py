@@ -44,8 +44,17 @@ VCC_API_KEY = os.environ["VCC_API_KEY"]
 REDIRECT_URI = os.environ.get("VOLVO_REDIRECT_URI", "http://localhost:4000/callback")
 TOKEN_FILE = Path(os.environ.get("VOLVO_TOKEN_FILE", "./data/token.json"))
 
-AUTH_URL = "https://volvoid.eu.volvocars.com/as/authorization.oauth2"
-TOKEN_URL = "https://volvoid.eu.volvocars.com/as/token.oauth2"
+# Volvo ID moved to Keycloak. New apps get a `vid-dc-...` client id and must
+# use the new realm; legacy `dc-...` clients only work on the old server, which
+# is retired after 2027-01-31.
+_KEYCLOAK = CLIENT_ID.startswith("vid-")
+if _KEYCLOAK:
+    _OIDC = "https://auth.volvocars.com/realms/volvocars/protocol/openid-connect"
+    AUTH_URL = f"{_OIDC}/auth"
+    TOKEN_URL = f"{_OIDC}/token"
+else:
+    AUTH_URL = "https://volvoid.eu.volvocars.com/as/authorization.oauth2"
+    TOKEN_URL = "https://volvoid.eu.volvocars.com/as/token.oauth2"
 API_BASE = "https://api.volvocars.com"
 
 SCOPES = [
@@ -59,6 +68,11 @@ SCOPES = [
     "conve:tyre_status",
     "energy:state:read",
 ]
+if _KEYCLOAK and os.environ.get("VOLVO_OFFLINE_ACCESS", "0") == "1":
+    # Opt-in: the developer portal currently doesn't offer this scope, and
+    # requesting it unassigned fails authorize with invalid_scope. Without offline_access Keycloak ties the refresh token to the browser
+    # SSO session (hours/days) and the headless service loses access.
+    SCOPES.append("offline_access")
 
 _token_lock = Lock()
 _cached_access_token: dict | None = None
@@ -253,7 +267,8 @@ def _authorize_flow() -> None:
         raise RuntimeError("OAuth state mismatch")
 
     if "error" in captured:
-        raise RuntimeError(f"OAuth error: {captured['error'][0]}")
+        desc = captured.get("error_description", [""])[0]
+        raise RuntimeError(f"OAuth error: {captured['error'][0]} {desc}".rstrip())
 
     if "code" not in captured:
         raise RuntimeError(f"No authorization code received. Callback parameters: {captured}")
@@ -275,8 +290,13 @@ def _authorize_flow() -> None:
         timeout=15,
     )
     resp.raise_for_status()
-    _save_refresh_token(resp.json()["refresh_token"])
+    body = resp.json()
+    _save_refresh_token(body["refresh_token"])
     print(f"Refresh token saved to {TOKEN_FILE}")
+    print(
+        f"access expires_in={body.get('expires_in')}s, "
+        f"refresh_expires_in={body.get('refresh_expires_in')}s (0 = no expiry / offline)"
+    )
 
 
 def _print_scopes() -> None:

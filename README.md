@@ -22,6 +22,12 @@ at the end.
    **redirect URI** (default here: `http://localhost:4000/callback`).
    Enable these scopes on the app: Connected Vehicle API (doors, lock,
    battery, odometer, fuel) and Energy API.
+   New apps get a `vid-dc…` client id and sign in via the new Volvo ID
+   (Keycloak) at `auth.volvocars.com`; legacy `dc-…` clients still use
+   `volvoid.eu.volvocars.com`, which is retired after 31 January 2027.
+   The server is picked automatically from the client id prefix. On the new
+   server refresh tokens live 90 days (renewed on each use) and access
+   tokens 5 minutes.
 2. Copy `.env.example` to `.env` and fill in VIN, VCC API key, OAuth client
    id/secret, redirect URI.
 3. Create a refresh token (opens a browser):
